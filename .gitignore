@@ -1,0 +1,21 @@
+# Ambientes Virtuais
+venv/
+*.venv/
+env/
+ENV/
+
+# Arquivos Python compilados e caches
+__pycache__/
+*.py[cod]
+*.class
+
+# Arquivos de configuração de IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Arquivos Docker
+.dockerignore
+.DS_Store
+*.log
