@@ -3,3 +3,4 @@ uvicorn[standard]
 qiskit
 qiskit-aer
 requests
+cryptography
