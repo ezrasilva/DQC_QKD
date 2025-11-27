@@ -6,7 +6,7 @@ import random
 import traceback
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Dict, Any
+from typing import Dict, Any, List
 from contextlib import asynccontextmanager
 
 # --- Importações do SeQUeNCe (v0.8.1) ---
@@ -20,10 +20,6 @@ from sequence.protocol import Protocol
 C_LIGHT_SPEED_MPS = 299_792_458
 FIBER_REFRACTIVE_INDEX = 1.468
 C_IN_FIBER = C_LIGHT_SPEED_MPS / FIBER_REFRACTIVE_INDEX
-
-# --- URL DO COLLECTOR (Passo 9) ---
-COLLECTOR_URL = "http://127.0.0.1:8006"
-# --- FIM ---
 
 # --- Utilidades de normalização/keys ---
 def _norm_name(name: str) -> str:
@@ -52,49 +48,42 @@ SIMULATOR_RUNNING = True
 
 # --- Topologia da Rede (PoC Estático) ---
 QNODE_URLS: Dict[str, str] = {
-    "alice": "http://127.0.0.1:8001",
-    "bob":   "http://127.0.0.1:8002"
+    "alice": "http://qnode-alice:8001",
+    "bob":   "http://qnode-bob:8002"
 }
-
-# --- FUNÇÃO DE MÉTRICAS (Passo 9) ---
-def post_metric_async(name: str, value: float, tags: dict = None):
-    """
-    Envia uma métrica para o Collector Service em uma thread separada
-    para não bloquear o loop da simulação.
-    """
-    try:
-        payload = {"name": name, "value": value, "tags": tags or {}}
-        requests.post(f"{COLLECTOR_URL}/submit_metric", json=payload, timeout=2)
-        # (Opcional: logar o envio)
-        # print(f"[SeQUeNCe Sim] Métrica '{name}' enviada ao Collector.")
-    except Exception as e:
-        # Silenciosamente falha se o collector estiver offline
-        print(f"[SeQUeNCe Sim] AVISO: Falha ao enviar métrica '{name}' para o Collector: {e}")
-# --- FIM DA FUNÇÃO ---
 
 # --- Lógica de Simulação ---
 
 def create_sequence_topology(tl: Timeline) -> Dict[str, Node]:
     print("[SeQUeNCe] Criando topologia: Alice <-> Bob (10km)")
-    # (Código de criação da topologia... sem alterações)
+    # (Pode ajustar a distância aqui para testar a decisão do SDN)
     distance_km = 10.0
     distance_m = distance_km * 1000
+    
     alice = Node("alice", tl)
     bob = Node("bob", tl)
+    
     MEM_PARAMS = {
         "fidelity": 1.0, "frequency": 0, "efficiency": 1.0,
         "coherence_time": 1e9, "wavelength": 1550
     }
+    
     mem_alice = QuantumMemory("mem_alice", tl, **MEM_PARAMS)
     mem_bob = QuantumMemory("mem_bob", tl, **MEM_PARAMS)
     alice.add_component(mem_alice)
     bob.add_component(mem_bob)
-    qc_ab = QuantumChannel("qc_alice_bob", tl, attenuation=0.0, distance=distance_m)
-    qc_ba = QuantumChannel("qc_bob_alice", tl, attenuation=0.0, distance=distance_m)
+    
+    # Canais bidirecionais
+    qc_ab = QuantumChannel("qc_alice_bob", tl, attenuation=0.2, distance=distance_m) # 0.2 dB/km
+    qc_ba = QuantumChannel("qc_bob_alice", tl, attenuation=0.2, distance=distance_m)
+    
     qc_ab.set_ends(alice, bob)
     qc_ba.set_ends(bob, alice)
+    
+    # Mapa usado pelo endpoint de monitoramento
     channel_map[_chan_key("alice", "bob")] = qc_ab
     channel_map[_chan_key("bob", "alice")] = qc_ba
+    
     print(f"[SeQUeNCe] Topologia criada. Distância: {distance_km} km.")
     return {"alice": alice, "bob": bob}
 
@@ -110,6 +99,8 @@ class ApiEntanglementProtocol(Protocol):
         print(f"[SeQUeNCe Sim] Protocolo {self.request_id} iniciado na timeline (T={self.timeline.now()}).")
         a = self.node_a_name
         b = self.node_b_name
+        
+        # Simula atraso físico
         channel = channel_map.get(_chan_key(a, b)) or channel_map.get(_chan_key(b, a))
         if not channel:
             print(f"[SeQUeNCe Sim] ERRO: Canal {a}-{b} não encontrado.")
@@ -117,25 +108,23 @@ class ApiEntanglementProtocol(Protocol):
 
         latency_sec = channel.distance / C_IN_FIBER
         latency_ns = latency_sec * 1e9
-        processing_time_ns = 10 * 1000
+        processing_time_ns = 10 * 1000 # overhead fixo
         total_delay_ns = latency_ns + processing_time_ns
 
         print(f"[SeQUeNCe Sim] Distância: {channel.distance/1000} km. Latência (fibra): {latency_ns:.0f} ns.")
-        print(f"[SeQUeNCe Sim] Aguardando {total_delay_ns:.0f} ns (tempo de simulação)...")
-
+        
+        # Aguarda na timeline
         yield self.await_timer(total_delay_ns)
 
-        print(f"[SeQUeNCe Sim] Simulação de par concluída (T={self.timeline.now()}).")
-        fidelity = round(random.uniform(0.70, 0.99), 4)
+        # Geração de Fidelidade (Mock da física)
+        # Numa versão avançada, isso dependeria da distância (attenuation)
+        base_fidelity = 0.99
+        loss_factor = (channel.distance / 1000) * 0.005 # perde 0.5% por km
+        final_fidelity = round(max(0.5, base_fidelity - loss_factor + random.uniform(-0.02, 0.02)), 4)
 
-        # --- MODIFICAÇÃO (Passo 9) ---
-        # Envia métricas para o Collector (sem bloquear a simulação)
-        metric_tags = {"pair_id": self.request_id, "nodes": _chan_key(a, b), "mode": "timeline"}
-        threading.Thread(target=post_metric_async, args=("pair_fidelity", fidelity, metric_tags), daemon=True).start()
-        threading.Thread(target=post_metric_async, args=("pair_latency_ns", total_delay_ns, metric_tags), daemon=True).start()
-        # --- FIM DA MODIFICAÇÃO ---
+        print(f"[SeQUeNCe Sim] Par concluído. Fidelidade gerada: {final_fidelity}")
         
-        payload = PairReadyNotification(pair_id=self.request_id, fidelity=fidelity)
+        payload = PairReadyNotification(pair_id=self.request_id, fidelity=final_fidelity)
 
         print(f"[SeQUeNCe Sim] Par {self.request_id} pronto. Notificando QNodes...")
         threading.Thread(target=self.do_http_callback, args=(self.node_a_name, payload.dict()), daemon=True).start()
@@ -146,16 +135,15 @@ class ApiEntanglementProtocol(Protocol):
 
     def do_http_callback(self, node_name: str, payload_dict: dict):
         try:
-            node_url = QNODE_URLS[_norm_name(node_name)]
-        except KeyError:
-            print(f"[SeQUeNCe Callback] URL do nó '{node_name}' não encontrada em QNODE_URLS.")
-            return
-        try:
+            node_url = QNODE_URLS.get(_norm_name(node_name))
+            if not node_url:
+                print(f"[Callback] URL não encontrada para {node_name}")
+                return
             resp = requests.post(f"{node_url}/pair_ready", json=payload_dict, timeout=3)
             resp.raise_for_status()
-            print(f"[SeQUeNCe Callback] Nó {node_name} notificado (status={resp.status_code}).")
+            print(f"[Callback] Nó {node_name} notificado.")
         except Exception as e:
-            print(f"[SeQUeNCe Callback] Erro ao notificar {node_name}: {e}")
+            print(f"[Callback] Erro ao notificar {node_name}: {e}")
 
 # --- Fallback (Simulação fora da timeline) ---
 
@@ -163,162 +151,163 @@ def _simulate_pair_fallback(request_id: str, node_a: str, node_b: str):
     a = _norm_name(node_a)
     b = _norm_name(node_b)
     channel = channel_map.get(_chan_key(a, b)) or channel_map.get(_chan_key(b, a))
-    if not channel:
-        print(f"[Fallback] ERRO: Canal {a}-{b} não encontrado.")
-        return
-
-    latency_sec = channel.distance / C_IN_FIBER
-    latency_ns = latency_sec * 1e9
-    processing_time_ns = 10 * 1000
-    total_delay_ns = latency_ns + processing_time_ns
-
-    print(f"[Fallback] Protocolo {request_id} simulado fora da timeline.")
-    print(f"[Fallback] Latência (fibra): {latency_ns:.0f} ns. Dormindo por {total_delay_ns/1e9:.6f} s...")
-
-    time.sleep(total_delay_ns / 1e9)
-    fidelity = round(random.uniform(0.70, 0.99), 4)
     
-    # --- MODIFICAÇÃO (Passo 9) ---
-    # Envia métricas para o Collector (do fallback)
-    metric_tags = {"pair_id": request_id, "nodes": _chan_key(a, b), "mode": "fallback"}
-    threading.Thread(target=post_metric_async, args=("pair_fidelity", fidelity, metric_tags), daemon=True).start()
-    threading.Thread(target=post_metric_async, args=("pair_latency_ns", total_delay_ns, metric_tags), daemon=True).start()
-    # --- FIM DA MODIFICAÇÃO ---
+    # Latencia padrao se canal nao existe
+    total_delay_s = 0.001
+    dist_km = 0
+    
+    if channel:
+        latency_sec = channel.distance / C_IN_FIBER
+        total_delay_s = latency_sec + 0.00001
+        dist_km = channel.distance / 1000
+
+    print(f"[Fallback] Simulando par {request_id} (delay={total_delay_s:.6f}s)...")
+    time.sleep(total_delay_s)
+    
+    # Fidelidade mockada com base na distancia
+    fidelity = round(max(0.5, 0.99 - (dist_km * 0.005)), 4)
     
     payload = PairReadyNotification(pair_id=request_id, fidelity=fidelity).dict()
 
-    print(f"[Fallback] Par {request_id} pronto. Notificando QNodes...")
+    print(f"[Fallback] Par {request_id} pronto ({fidelity}). Notificando QNodes...")
     for node_name in (a, b):
-        # (O resto da função de callback do fallback... sem alterações)
         try:
-            node_url = QNODE_URLS[_norm_name(node_name)]
-        except KeyError:
-            print(f"[Fallback] ERRO: URL do nó '{node_name}' não encontrada.")
-            continue
-        try:
-            resp = requests.post(f"{node_url}/pair_ready", json=payload, timeout=3)
-            resp.raise_for_status()
-            print(f"[Fallback] Nó {node_name} notificado (status={resp.status_code}).")
+            node_url = QNODE_URLS.get(_norm_name(node_name))
+            if node_url:
+                requests.post(f"{node_url}/pair_ready", json=payload, timeout=3)
         except Exception as e:
             print(f"[Fallback] Erro ao notificar {node_name}: {e}")
 
-# --- Arquitetura de Sincronização (v0.5.x) ---
+# --- Arquitetura de Sincronização ---
 
 def run_simulator_loop(tl: Timeline):
-    print("[SeQUeNCe Thread] Iniciada. Aguardando eventos...")
+    print("[SeQUeNCe Thread] Iniciada.")
     global SIMULATOR_RUNNING
     SIMULATOR_RUNNING = True
     while SIMULATOR_RUNNING:
         try:
             NEW_EVENT_SEMAPHORE.wait()
             if not SIMULATOR_RUNNING: break
-            print("[SeQUeNCe Thread] Sinal recebido. Processando tl.run()...")
             tl.run()
-            print("[SeQUeNCe Thread] Fila de eventos vazia. Aguardando novamente...")
             NEW_EVENT_SEMAPHORE.clear()
         except Exception as e:
-            print(f"[SeQUeNCe Thread] Erro fatal no simulador: {e}")
+            print(f"[SeQUeNCe Thread] Erro: {e}")
             traceback.print_exc()
             SIMULATOR_RUNNING = False
-    print("[SeQUeNCe Thread] Loop do simulador encerrado.")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("[FastAPI] Evento de startup (lifespan) disparado.")
+    print("[SeQUeNCe] Startup...")
     global timeline, simulator_thread, node_map
     timeline = Timeline()
-    print("[FastAPI] Timeline do SeQUeNCe criada.")
     node_map = create_sequence_topology(timeline)
-    if not node_map:
-        print("[FastAPI] AVISO: Topologia não foi criada. Saindo.")
-    else:
-        print("[FastAPI] Iniciando thread do simulador SeQUeNCe...")
-        simulator_thread = threading.Thread(
-            target=run_simulator_loop, args=(timeline,), daemon=True
-        )
-        simulator_thread.start()
-        print("[FastAPI] Servidor pronto. Simulador rodando em background.")
+    
+    simulator_thread = threading.Thread(
+        target=run_simulator_loop, args=(timeline,), daemon=True
+    )
+    simulator_thread.start()
     yield
-    print("[FastAPI] Evento de shutdown (lifespan) disparado.")
+    print("[SeQUeNCe] Shutdown...")
     global SIMULATOR_RUNNING
     SIMULATOR_RUNNING = False
     NEW_EVENT_SEMAPHORE.set()
     if simulator_thread:
         simulator_thread.join(timeout=3)
-    print("[FastAPI] Thread do simulador encerrada.")
 
 # --- Configuração da Aplicação FastAPI ---
 app = FastAPI(
-    title="SeQUeNCe Integration Layer",
-    description="Serviço que executa o simulador SeQUeNCe em background.",
-    version="0.5.4", # <- Versão atualizada
+    title="SeQUeNCe Network Simulator",
+    description="Simulador de Camada Física para SDN Quântica.",
+    version="1.0-SDN",
     lifespan=lifespan
 )
 
 @app.get("/", summary="Health Check")
 def read_root():
-    # (Sem alterações)
     status = "running" if (simulator_thread and simulator_thread.is_alive()) else "stopped"
     return {
-        "status": "SeQUeNCe Integration Layer está online",
-        "version": app.version,
+        "status": "online",
         "simulator": status,
-        "timeline_now": timeline.now() if timeline else None
+        "timeline_now": timeline.now() if timeline else 0
+    }
+
+# --- NOVO ENDPOINT: Monitoramento para o SDN ---
+@app.get("/network_status", summary="Telemetria da Rede para o SDN Controller")
+def get_network_status():
+    """
+    Retorna o estado atual dos links (latência, fidelidade estimada).
+    O Orchestrator usa isso para decidir onde alocar os slices.
+    """
+    telemetry = {}
+    
+    for key, channel in channel_map.items():
+        # Cálculo de latência baseado na física
+        latency_ns = (channel.distance / C_IN_FIBER) * 1e9
+        
+        # Mock de fidelidade baseado na atenuação (pode adicionar ruído randômico aqui)
+        # Ex: Se a rede estiver 'congestionada', baixe a fidelidade
+        estimated_fidelity = max(0.5, 0.99 - (channel.distance/1000 * 0.005))
+        
+        telemetry[key] = {
+            "source": channel.ends[0].name if channel.ends else "?",
+            "target": channel.ends[1].name if channel.ends else "?",
+            "distance_km": channel.distance / 1000.0,
+            "latency_ns": round(latency_ns, 2),
+            "estimated_fidelity": round(estimated_fidelity, 4),
+            "status": "active"
+        }
+        
+    return {
+        "timestamp": time.time(),
+        "links": telemetry
     }
 
 @app.post("/create_pair", summary="Solicita a criação de um par entrelaçado")
 def create_pair(request: CreatePairRequest):
-    print(f"\n[FastAPI] Recebida solicitação de par: {request.request_id} ({request.node_a} <-> {request.node_b})")
+    print(f"\n[API] Solicitação de par: {request.request_id} ({request.node_a} <-> {request.node_b})")
     try:
-        # (Sem alterações nesta função)
-        if not timeline or not simulator_thread or not simulator_thread.is_alive():
-            print("[Debug] FALHA NA VERIFICAÇÃO 'is_alive()'")
-            raise HTTPException(status_code=500, detail="Simulador SeQUeNCe não está rodando.")
+        if not timeline:
+            raise HTTPException(status_code=500, detail="Simulador não inicializado.")
+            
         req_a = _norm_name(request.node_a)
         req_b = _norm_name(request.node_b)
+        
         if req_a not in node_map or req_b not in node_map:
-            print(f"[FastAPI] ERRO: Nós {req_a} ou {req_b} não encontrados no 'node_map'.")
-            raise HTTPException(status_code=404, detail="Nó(s) não encontrado(s) na topologia do SeQUeNCe.")
-        print("[Debug] Obtendo 'node_a' do node_map...")
+            raise HTTPException(status_code=404, detail="Nós não encontrados na topologia.")
+            
         node_a_obj = node_map[req_a]
-        owner_tl = getattr(node_a_obj, "timeline", None)
-        if owner_tl is not timeline:
-            raise HTTPException(status_code=500, detail="Timeline inconsistente no nó proprietário do protocolo.")
-        print("[Debug] Criando objeto ApiEntanglementProtocol...")
+        
+        # Cria e inicia o protocolo
         protocol = ApiEntanglementProtocol(
-            owner=node_a_obj, name=f"api_protocol_{request.request_id}",
-            request_id=request.request_id, node_a_name=req_a, node_b_name=req_b
+            owner=node_a_obj, 
+            name=f"proto_{request.request_id}",
+            request_id=request.request_id, 
+            node_a_name=req_a, 
+            node_b_name=req_b
         )
-        print("[Debug] Chamando protocol.start()...")
-        if hasattr(protocol, "start") and callable(getattr(protocol, "start")):
-            try:
-                protocol.start()
-            except Exception as e:
-                print("[Debug] Falha em protocol.start():", e)
-                traceback.print_exc()
-                raise HTTPException(status_code=500, detail=f"Falha ao iniciar protocolo: {e}")
-            print("[Debug] Sinalizando a thread do simulador (semaphore.set())...")
+        
+        # Tenta iniciar na timeline ou fallback
+        if hasattr(protocol, "start"):
+            protocol.start()
             NEW_EVENT_SEMAPHORE.set()
-            print(f"[FastAPI] Protocolo {request.request_id} iniciado no SeQUeNCe.")
         else:
-            print("[Debug] 'Protocol.start()' indisponível — usando fallback com thread.")
             threading.Thread(
                 target=_simulate_pair_fallback,
                 args=(request.request_id, req_a, req_b),
                 daemon=True
             ).start()
-            print(f"[FastAPI] Protocolo {request.request_id} agendado via fallback.")
-        return {"status": "pair_creation_started", "request_id": request.request_id}
+            
+        return {"status": "started", "request_id": request.request_id}
+        
     except HTTPException:
         raise
     except Exception as e:
-        print("=" * 50)
-        print(f"[FASTAPI] ERRO 500 DETALHADO:")
         traceback.print_exc()
-        print("=" * 50)
         raise HTTPException(status_code=500, detail=f"Erro interno: {e}")
 
-# --- Execução do Servidor ---
+# sequence/app.py (final do arquivo)
+
 if __name__ == "__main__":
-    print("Iniciando servidor SeQUeNCe Integration Layer (v0.8.1) na porta 8004...")
-    uvicorn.run(app, host="0.0.0.0", port=8004)
+    print("Iniciando Sequence Simulator (SDN-Enabled) na porta 8004...")
+    # Adicione 'reload=True' aqui se estiver em desenvolvimento
+    uvicorn.run("sequence.app:app", host="0.0.0.0", port=8004, reload=True)

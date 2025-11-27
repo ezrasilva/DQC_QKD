@@ -1,0 +1,74 @@
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: orchestrator
+    container_name: dqc_orchestrator
+    command: uvicorn orchestrator.app:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      - SEQUENCE_URL=http://sequence:8004
+      - LOG_LEVEL=INFO
+    depends_on:
+      - sequence
+      - qnode-alice
+      - qnode-bob
+    networks:
+      - dqc_net
+
+  sequence:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: sequence
+    container_name: dqc_sequence
+    command: python sequence/app.py
+    ports:
+      - "8004:8004"
+    networks:
+      - dqc_net
+  qnode-alice:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: qnode
+    container_name: dqc_qnode_alice
+    command: python qnode/app.py 8001
+    ports:
+      - "8001:8001"
+    environment:
+      - QNODE_PAIR_STORE_PATH=/data/pair_store.json
+    volumes:
+      - qnode_alice_data:/data
+    networks:
+      - dqc_net
+
+  qnode-bob:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: qnode
+    container_name: dqc_qnode_bob
+    command: python qnode/app.py 8002
+    ports:
+      - "8002:8002"
+    environment:
+      - QNODE_PAIR_STORE_PATH=/data/pair_store.json
+    volumes:
+      - qnode_bob_data:/data
+    networks:
+      - dqc_net
+
+networks:
+  dqc_net:
+    driver: bridge
+
+volumes:
+  qnode_alice_data:
+  qnode_bob_data:
