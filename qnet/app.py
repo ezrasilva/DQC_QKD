@@ -230,8 +230,8 @@ def read_root():
         "simulator": status,
         "timeline_now": timeline.now() if timeline else 0
     }
+# sequence/app.py
 
-# --- NOVO ENDPOINT: Monitoramento para o SDN ---
 @app.get("/network_status", summary="Telemetria da Rede para o SDN Controller")
 def get_network_status():
     """
@@ -244,13 +244,16 @@ def get_network_status():
         # Cálculo de latência baseado na física
         latency_ns = (channel.distance / C_IN_FIBER) * 1e9
         
-        # Mock de fidelidade baseado na atenuação (pode adicionar ruído randômico aqui)
-        # Ex: Se a rede estiver 'congestionada', baixe a fidelidade
+        # CORREÇÃO AQUI: Usar .sender e .receiver em vez de .ends
+        source_name = channel.sender.name if hasattr(channel, "sender") and channel.sender else "?"
+        target_name = channel.receiver.name if hasattr(channel, "receiver") and channel.receiver else "?"
+        
+        # Mock de fidelidade baseado na atenuação
         estimated_fidelity = max(0.5, 0.99 - (channel.distance/1000 * 0.005))
         
         telemetry[key] = {
-            "source": channel.ends[0].name if channel.ends else "?",
-            "target": channel.ends[1].name if channel.ends else "?",
+            "source": source_name,
+            "target": target_name,
             "distance_km": channel.distance / 1000.0,
             "latency_ns": round(latency_ns, 2),
             "estimated_fidelity": round(estimated_fidelity, 4),
@@ -306,8 +309,7 @@ def create_pair(request: CreatePairRequest):
         raise HTTPException(status_code=500, detail=f"Erro interno: {e}")
 
 # sequence/app.py (final do arquivo)
-
 if __name__ == "__main__":
     print("Iniciando Sequence Simulator (SDN-Enabled) na porta 8004...")
-    # Adicione 'reload=True' aqui se estiver em desenvolvimento
-    uvicorn.run("sequence.app:app", host="0.0.0.0", port=8004, reload=True)
+    # Para habilitar reload/workers, passe o application import string
+    uvicorn.run(app, host="0.0.0.0", port=8004, )

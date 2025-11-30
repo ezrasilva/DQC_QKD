@@ -13,20 +13,20 @@ services:
       - SEQUENCE_URL=http://sequence:8004
       - LOG_LEVEL=INFO
     depends_on:
-      - sequence
+      - qnet
       - qnode-alice
       - qnode-bob
     networks:
       - dqc_net
 
-  sequence:
+  qnet:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        SERVICE_NAME: sequence
-    container_name: dqc_sequence
-    command: python sequence/app.py
+        SERVICE_NAME: qnet
+    container_name: dqc_qnet_controller
+    command: python qnet/app.py
     ports:
       - "8004:8004"
     networks:

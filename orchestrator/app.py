@@ -1,45 +1,46 @@
+# orchestrator/app.py
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from typing import Optional, Dict
 import logging
+# Importa o controlador corretamente
 from orchestrator.controller import SDNController
 
-app = FastAPI(title="SDN Quantum Controller", version="1.0-HDH")
-logger = logging.getLogger("sdn-controller")
+app = FastAPI(title="SDN Quantum Controller", version="1.1-Fixed")
+logger = logging.getLogger("sdn-gateway")
 
+# Instancia o cérebro
 sdn_controller = SDNController()
 
 class QuantumJobRequest(BaseModel):
     job_id: str
-    circuit_qasm: str  
+    circuit_qasm: str
     shots: int = 1024
 
 @app.post("/submit_job")
-def submit_job(req: QuantumJobRequest, background_tasks: BackgroundTasks):
+def submit_job(req: QuantumJobRequest):
     """
-    Recebe um circuito completo, particiona via HDH e executa na rede.
+    Recebe o circuito COMPLETO. O Controller decide como fatiar e onde rodar.
     """
+    logger.info(f"Recebido Job {req.job_id}")
     try:
-        # 1. Análise e Particionamento (Camada HDH)
-        # O controller vai retornar um plano de execução: 
-        # Ex: [{'node': 'alice', 'slice': '...'}, {'node': 'bob', 'slice': '...'}]
-        execution_plan = sdn_controller.plan_execution(req.circuit_qasm)
+        # 1. O Controller cria o plano (HDH + Rede)
+        plan = sdn_controller.plan_execution(req.circuit_qasm)
         
-        # 2. Execução (Camada de Dados)
-        # Despacha as fatias conforme o plano
-        results = sdn_controller.execute_plan(req.job_id, execution_plan, req.shots)
+        # 2. O Controller executa
+        results = sdn_controller.execute_plan(req.job_id, plan, req.shots)
         
+        # --- AQUI ESTAVA O PROBLEMA ---
+        # Retornamos o plano completo para o teste poder validar
         return {
-            "status": "completed", 
+            "status": "success",
             "job_id": req.job_id,
-            "plan_summary": f"Dividido em {len(execution_plan)} fatias",
+            "execution_plan": plan,  # <--- ESSA CHAVE É OBRIGATÓRIA PARA O TESTE
             "results": results
         }
     except Exception as e:
-        logger.error(f"Erro no job {req.job_id}: {e}")
+        logger.error(f"Erro fatal no Job {req.job_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Health Check simples
 @app.get("/health")
 def health():
-    return {"status": "online", "mode": "SDN-Controller-Option-A"}
+    return {"status": "online", "mode": "SDN-Controller"}
